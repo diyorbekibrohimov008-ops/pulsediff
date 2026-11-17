@@ -1,0 +1,28 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/handler.ts": {
+      "maxDuration": 30
+    }
+  },
+  "schedules": {
+    "probe-tick": {
+      "schedule": "*/15 * * * *",
+      "path": "/api/cron/tick",
+      "requestMethod": "GET"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/handler?__path=/api/$1"
+    },
+    {
+      "source": "/((?!api/|assets/|favicon\\.svg).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
