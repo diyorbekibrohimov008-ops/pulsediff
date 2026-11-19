@@ -76,15 +76,19 @@ function getEnv(name: string): string | undefined {
   return process.env[name];
 }
 
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function isWriteAuthorized(req: Request): boolean {
   const adminToken = getEnv("ADMIN_SECRET");
   if (!adminToken || adminToken.trim().length === 0) return true;
   const authHeader = req.headers.get("authorization") || "";
   const tokenHeader = req.headers.get("x-admin-token") || "";
-  if (authHeader === `Bearer ${adminToken}` || tokenHeader === adminToken) {
-    return true;
-  }
-  return false;
+  return safeEqual(authHeader, `Bearer ${adminToken}`) || safeEqual(tokenHeader, adminToken);
 }
 
 function getRuntimeEnvironment(): "vercel" | "netlify" | "local" {

@@ -246,7 +246,7 @@ export function AddMonitorModal({ existingMonitor, onClose, onSaved }: AddMonito
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-      <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-800 bg-[#0d1320] shadow-2xl">
+      <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-2xl border border-slate-800 bg-[#0d1320] shadow-2xl">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-[#0d1320]/95 px-6 py-4 backdrop-blur">
           <div>
             <h2 className="text-base font-semibold text-slate-100">
@@ -259,7 +259,8 @@ export function AddMonitorModal({ existingMonitor, onClose, onSaved }: AddMonito
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            aria-label="Close modal"
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70"
           >
             <X className="h-5 w-5" />
           </button>
@@ -283,7 +284,7 @@ export function AddMonitorModal({ existingMonitor, onClose, onSaved }: AddMonito
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Production Payments API"
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-500"
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60"
               />
             </div>
             <div>
@@ -315,7 +316,7 @@ export function AddMonitorModal({ existingMonitor, onClose, onSaved }: AddMonito
               <select
                 value={method}
                 onChange={(e) => setMethod(e.target.value as "GET" | "POST" | "HEAD")}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-emerald-500"
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:border-emerald-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60"
               >
                 <option value="GET">GET</option>
                 <option value="POST">POST</option>
@@ -330,7 +331,7 @@ export function AddMonitorModal({ existingMonitor, onClose, onSaved }: AddMonito
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://api.example.com/health"
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 outline-none focus:border-emerald-500"
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:border-emerald-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60"
               />
             </div>
           </div>
@@ -412,7 +413,7 @@ export function AddMonitorModal({ existingMonitor, onClose, onSaved }: AddMonito
                   onChange={(e) => setEnableAutoHeal(e.target.checked)}
                   className="peer sr-only"
                 />
-                <div className="h-5 w-9 rounded-full bg-slate-700 peer-checked:bg-amber-500 after:absolute after:top-0.5 after:left-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all peer-checked:after:translate-x-4" />
+                <div className="h-5 w-9 rounded-full bg-slate-700 peer-checked:bg-amber-500 after:absolute after:top-0.5 after:left-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-4" />
               </label>
             </div>
 

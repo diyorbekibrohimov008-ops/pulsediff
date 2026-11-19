@@ -4,3 +4,13 @@ dist
 .local-data
 .env
 .env.*
+
+.vercel
+.env*
+
+# Secrets, environment variables, and deploy state
+*.env
+!.env.example
+*.pem
+*.key
+.data/

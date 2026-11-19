@@ -159,7 +159,7 @@ async function singleHttpProbe(
   url: URL,
   resolvedIp: string | null,
   dnsMs: number,
-  monitor: Pick<Monitor, "method" | "headers" | "requestBody" | "timeoutMs">
+  monitor: Pick<Monitor, "method" | "headers" | "requestBody" | "timeoutMs" | "allowInsecureTls">
 ): Promise<{
   statusCode: number;
   headers: Record<string, string>;
@@ -200,9 +200,7 @@ async function singleHttpProbe(
       headers: reqHeaders,
       agent: false,
       timeout: monitor.timeoutMs,
-      // Use non-rejecting handshake so diagnostic probe still captures expired/invalid cert details,
-      // then fail explicitly if !tlsInfo.authorized and !monitor.allowInsecureTls.
-      rejectUnauthorized: false,
+      rejectUnauthorized: !monitor.allowInsecureTls,
       servername: isHttps ? url.hostname : undefined,
       lookup: resolvedIp
         ? (_host, opts, cb) => {

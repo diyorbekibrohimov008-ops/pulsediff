@@ -6,6 +6,10 @@ PulseDiff is a modern, developer-first alternative to Pulsetic, UptimeRobot, and
 
 PulseDiff delivers **included 30-second checks**, **zero-branding white-label status pages**, **payload-level failure diffing**, and **instant auto-healing webhooks** to automatically restart failing services the second downtime occurs.
 
+> [!WARNING]
+> **Project Status — Work in Progress (Not Fully Ready)**
+> This project is currently under active development and is **not fully ready for production**. Some parts, features, or workflow steps will fail or behave unexpectedly. We are actively working on fixing all remaining issues.
+
 ---
 
 ## Live Production Demo

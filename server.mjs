@@ -17,8 +17,26 @@ const MIME_TYPES = {
   ".svg": "image/svg+xml",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
-  ".ico": "image/x-icon"
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff"
 };
+
+const SECURITY_HEADERS = {
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+};
+
+function applySecurityHeaders(res) {
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+    if (!res.hasHeader(k)) res.setHeader(k, v);
+  }
+}
 
 async function readNodeRequestBody(req) {
   if (req.method === "GET" || req.method === "HEAD") return undefined;
@@ -48,6 +66,7 @@ export async function createPulseDiffServer(options = {}) {
   const distDir = path.resolve(process.cwd(), "dist");
 
   const server = http.createServer(async (req, res) => {
+    applySecurityHeaders(res);
     const reqUrl = new URL(req.url || "/", origin);
 
     if (reqUrl.pathname.startsWith("/api/")) {
