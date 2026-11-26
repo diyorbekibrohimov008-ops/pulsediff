@@ -5,9 +5,23 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+:root {
+  --bp-canvas: #0b121c;
+  --bp-panel: #111c2b;
+  --bp-well: #070d14;
+  --bp-rule: #1e3048;
+  --bp-rule-strong: #2c4566;
+  --bp-signal: #22d3ee;
+  --bp-ok: #10b981;
+  --bp-warn: #f59e0b;
+  --bp-alert: #f43f5e;
+}
+
 @layer base {
   body {
     font-family: var(--font-sans);
+    background-color: var(--bp-canvas);
+    color: #f1f5f9;
   }
 
   code,
@@ -20,14 +34,47 @@
   a:focus-visible,
   input:focus-visible,
   select:focus-visible,
-  textarea:focus-visible {
-    outline: 2px solid #10b981;
+  textarea:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid #22d3ee;
     outline-offset: 2px;
   }
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* Technical blueprint hairline grid for instrument bench backdrop */
+.blueprint-canvas {
+  background-color: #0b121c;
+  background-image:
+    linear-gradient(to right, rgba(30, 48, 72, 0.28) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(30, 48, 72, 0.28) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Recessed oscilloscope graticule surface */
+.scope-graticule {
+  background-color: #070d14;
+  background-image:
+    linear-gradient(to right, rgba(34, 211, 238, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(34, 211, 238, 0.08) 1px, transparent 1px);
+  background-size: 20px 14px;
+}
+
+@keyframes scope-scan {
+  0% {
+    stroke-dashoffset: 180;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.scope-trace-enter {
+  stroke-dasharray: 180;
+  animation: scope-scan 700ms ease-out forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -41,21 +88,21 @@
   }
 }
 
-/* Custom subtle scrollbars for diff and log panels */
+/* Subtle calibrated scrollbars for diff & trace logs */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #070d14;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.25);
-  border-radius: 9999px;
+  background: rgba(56, 86, 122, 0.55);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.45);
+  background: rgba(34, 211, 238, 0.5);
 }

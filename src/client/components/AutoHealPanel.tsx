@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, Clock, Play, RotateCcw, Shield, Zap } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CheckCircle2, ChevronDown, ChevronRight, Clock, Play, RotateCcw, Shield, Wrench } from "lucide-react";
 import type { Monitor, WebhookDelivery } from "../../server/types.ts";
 
 interface AutoHealPanelProps {
@@ -11,11 +11,11 @@ interface AutoHealPanelProps {
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
-  vercel: "Vercel Redeploy",
-  netlify: "Netlify Build Hook",
-  github_action: "GitHub Action",
+  vercel: "Vercel redeploy",
+  netlify: "Netlify build hook",
+  github_action: "GitHub Actions",
   aws_lambda: "AWS Lambda",
-  custom: "Custom Restart Webhook"
+  custom: "Custom webhook"
 };
 
 export function AutoHealPanel({
@@ -28,95 +28,116 @@ export function AutoHealPanel({
   const [expandedId, setExpandedId] = useState<string | null>(deliveries[0]?.id ?? null);
   const rule = monitor.autoHealRule;
 
+  useEffect(() => {
+    setExpandedId(deliveries[0]?.id ?? null);
+  }, [monitor.id, deliveries]);
+
   return (
-    <div className="rounded-xl border border-slate-800/80 bg-slate-900/50">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 px-4 py-3">
-        <div className="flex items-center gap-2.5">
-          <Zap className="h-4 w-4 text-amber-400" />
+    <div className="rounded-md border border-[#1e3048] bg-[#111c2b]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#1e3048] px-4 py-3">
+        <div className="flex items-start gap-2.5">
+          <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
           <div>
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
-              Auto-Healing Webhook Remediation
+            <h4 className="text-sm font-semibold text-slate-100">
+              Auto-fix rules (optional)
             </h4>
             <p className="mt-0.5 text-xs text-slate-400">
-              Automatically triggers container/service restart the moment downtime is detected
+              Automatically call a restart or redeploy URL if this website goes down
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={onEditRule}
-            className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
+            className="rounded border border-[#2c4566] bg-[#162436] px-3 py-1.5 text-xs font-medium text-slate-100 transition hover:border-cyan-400/60"
           >
-            {rule ? "Configure Webhook" : "+ Attach Auto-Heal"}
+            {rule ? "Edit auto-fix rule" : "Add auto-fix rule"}
           </button>
           {rule && (
             <button
               type="button"
               onClick={onTestHeal}
               disabled={testingHeal}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-300 ring-1 ring-amber-500/30 transition hover:bg-amber-500/25 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded border border-amber-400/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/25 disabled:opacity-50"
             >
               <Play className="h-3.5 w-3.5" />
-              {testingHeal ? "Dispatching..." : "Test Fire Webhook"}
+              {testingHeal ? "Running test..." : "Test rule now"}
             </button>
           )}
         </div>
       </div>
 
       {rule ? (
-        <div className="border-b border-slate-800/80 bg-slate-950/40 px-4 py-3">
+        <div className="border-b border-[#1e3048] bg-[#0c1522] px-4 py-3.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-300 ring-1 ring-amber-500/25">
+              <span className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-200">
                 {PROVIDER_LABELS[rule.provider] ?? rule.provider}
               </span>
               <span className="text-sm font-medium text-slate-100">{rule.name}</span>
               <span
-                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                className={`rounded px-2 py-0.5 text-xs font-medium ${
                   rule.enabled
-                    ? "bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30"
-                    : "bg-slate-800 text-slate-400"
+                    ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : "border border-[#1e3048] bg-[#111c2b] text-slate-400"
                 }`}
               >
-                {rule.enabled ? "Armed" : "Disabled"}
+                {rule.enabled ? "Active" : "Off"}
               </span>
               {rule.secret && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-300 ring-1 ring-sky-500/25">
-                  <Shield className="h-2.5 w-2.5" />
-                  HMAC-SHA256 Signed
+                <span className="inline-flex items-center gap-1 rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs text-cyan-200">
+                  <Shield className="h-3 w-3" />
+                  Signed (HMAC)
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-3 text-xs text-slate-400">
-              <span>Trigger after {rule.triggerAfterFailures} failure(s)</span>
-              <span>·</span>
-              <span>{rule.cooldownSeconds}s cooldown</span>
+
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+              <span>After {rule.triggerAfterFailures} failed check{rule.triggerAfterFailures === 1 ? "" : "s"}</span>
+              <span className="h-3 w-px bg-[#1e3048]" aria-hidden="true" />
+              <span>{rule.cooldownSeconds}s wait between runs</span>
             </div>
           </div>
-          <div className="mt-2 truncate font-mono text-xs text-slate-400">
-            <span className="mr-2 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-slate-200">
+
+          <div className="mt-2.5 flex items-center gap-2 truncate rounded border border-[#1e3048] bg-[#070d14] px-2.5 py-1.5 font-mono text-xs text-slate-300">
+            <span className="rounded bg-[#162436] px-1.5 py-0.5 text-[11px] font-semibold text-cyan-300">
               {rule.method}
             </span>
-            {rule.webhookUrl}
+            <span className="truncate">{rule.webhookUrl}</span>
           </div>
         </div>
       ) : (
-        <div className="px-4 py-6 text-center text-xs text-slate-400">
-          No auto-healing webhook attached yet. Add a Vercel deploy hook, GitHub Action dispatch,
-          AWS Lambda URL, or custom restart webhook to eliminate manual SSH restarts.
+        <div className="px-4 py-7 text-center">
+          <p className="text-sm font-medium text-slate-200">No auto-fix rule set up yet</p>
+          <p className="mx-auto mt-1 max-w-md text-xs text-slate-400">
+            This is optional. Connect a Vercel deploy hook, Netlify build hook, GitHub Actions workflow, or custom restart URL if you want PulseDiff to restart a crashed service automatically.
+          </p>
+          <button
+            type="button"
+            onClick={onEditRule}
+            className="mt-3 rounded border border-[#2c4566] bg-[#162436] px-3.5 py-1.5 text-xs font-medium text-cyan-200 transition hover:border-cyan-400/60"
+          >
+            Set up an auto-fix rule
+          </button>
         </div>
       )}
 
       {/* Delivery Log */}
       {deliveries.length > 0 && (
-        <div className="divide-y divide-slate-800/60">
-          <div className="bg-slate-950/30 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-            Recent Remediation Executions ({deliveries.length})
+        <div className="divide-y divide-[#1e3048]">
+          <div className="bg-[#0c1522] px-4 py-2 text-xs font-medium text-slate-400">
+            Recent automatic fix attempts ({deliveries.length})
           </div>
           {deliveries.slice(0, 8).map((del) => {
             const isOpen = expandedId === del.id;
+            const statusLabel =
+              del.status === "dispatched"
+                ? "Sent"
+                : del.status === "cooldown_skipped"
+                ? "Skipped (cooldown)"
+                : "Failed";
             return (
               <div key={del.id} className="px-4 py-2.5 text-xs">
                 <button
@@ -124,35 +145,35 @@ export function AutoHealPanel({
                   onClick={() => setExpandedId(isOpen ? null : del.id)}
                   className="flex w-full flex-wrap items-center justify-between gap-2 text-left"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {isOpen ? (
-                      <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
+                      <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
                     ) : (
-                      <ChevronRight className="h-3.5 w-3.5 text-slate-500" />
+                      <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
                     )}
                     <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                      className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium ${
                         del.status === "dispatched"
-                          ? "bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30"
+                          ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
                           : del.status === "cooldown_skipped"
-                          ? "bg-slate-800 text-slate-400"
-                          : "bg-rose-500/10 text-rose-400 ring-1 ring-rose-500/30"
+                          ? "border border-[#1e3048] bg-[#070d14] text-slate-400"
+                          : "border border-rose-500/30 bg-rose-500/10 text-rose-300"
                       }`}
                     >
                       <RotateCcw className="h-2.5 w-2.5" />
-                      {del.status.replace("_", " ")}
+                      {statusLabel}
                     </span>
                     {del.responseStatus && (
                       <span className="font-mono text-slate-300">HTTP {del.responseStatus}</span>
                     )}
                     {del.recoveredNextCheck && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                      <span className="inline-flex items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
                         <CheckCircle2 className="h-3 w-3" />
-                        Verified Recovered
+                        Recovered on next check
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
+                  <div className="flex items-center gap-3 font-mono text-[11px] tabular-nums text-slate-400">
                     <span>{del.durationMs} ms</span>
                     <span className="inline-flex items-center gap-1">
                       <Clock className="h-3 w-3" />
@@ -163,20 +184,22 @@ export function AutoHealPanel({
 
                 {isOpen && (
                   <div className="mt-2.5 grid grid-cols-1 gap-2 pl-5 md:grid-cols-2">
-                    <div className="rounded-lg border border-slate-800 bg-[#070a11] p-2.5">
-                      <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">
-                        Outbound Payload
+                    <div className="rounded border border-[#1e3048] bg-[#070d14] p-2.5">
+                      <div className="mb-1 text-[11px] font-medium text-slate-400">
+                        Request sent
                       </div>
                       <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-slate-300">
                         {del.requestBody || "(no request body)"}
                       </pre>
                     </div>
-                    <div className="rounded-lg border border-slate-800 bg-[#070a11] p-2.5">
-                      <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">
-                        Target Response
+                    <div className="rounded border border-[#1e3048] bg-[#070d14] p-2.5">
+                      <div className="mb-1 text-[11px] font-medium text-slate-400">
+                        Response received
                       </div>
                       <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-slate-300">
-                        {del.error ? `${del.error}\n${del.responseBody}` : del.responseBody || "(empty)"}
+                        {del.error
+                          ? `${del.error}\n${del.responseBody}`
+                          : del.responseBody || "(empty)"}
                       </pre>
                     </div>
                   </div>

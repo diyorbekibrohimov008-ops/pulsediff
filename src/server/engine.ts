@@ -247,21 +247,28 @@ export async function getStatusPageConfig(
   store: KvStore,
   slug = "default"
 ): Promise<StatusPageConfig> {
-  const existing = await store.getJSON<StatusPageConfig>(`settings/status-pages/${slug}`);
-  if (existing) return existing;
+  const existing = await store.getJSON<StatusPageConfig & { planTier?: string }>(
+    `settings/status-pages/${slug}`
+  );
+  if (existing) {
+    return {
+      ...existing,
+      planTier: "free"
+    };
+  }
   const defaults: StatusPageConfig = {
     slug,
     brandName: "Acme Cloud Infrastructure",
-    tagline: "Real-time API health, SSL status, and incident transparency",
+    tagline: "Live uptime, response times, and incident updates",
     logoUrl: "",
-    accentColor: "#10b981",
+    accentColor: "#22d3ee",
     theme: "dark",
     customDomain: "",
     customDomainVerified: false,
     customDomainRecords: [],
     hidePlatformBranding: true,
     showFailureTracesPublicly: false,
-    planTier: "starter_10",
+    planTier: "free",
     subMinuteMode: "smart",
     updatedAt: Date.now()
   };
@@ -525,18 +532,21 @@ export async function runDueMonitors(
     : active.filter((m) => !m.lastCheckedAt || m.nextCheckAt <= now + 5_000);
 
   const results: Array<{ monitorId: string; status: string; totalMs: number }> = [];
-  // Run probes concurrently in batches of 5.
+  // Run probes concurrently in batches of 5 with per-monitor fault isolation.
   for (let i = 0; i < due.length; i += 5) {
     const batch = due.slice(i, i + 5);
-    const settled = await Promise.all(
+    const settled = await Promise.allSettled(
       batch.map((m) => runCheckForMonitor(store, m, { probeOptions: opts?.probeOptions }))
     );
-    for (const item of settled) {
-      results.push({
-        monitorId: item.monitor.id,
-        status: item.checkRun.status,
-        totalMs: item.checkRun.timings.totalMs
-      });
+    for (const outcome of settled) {
+      if (outcome.status === "fulfilled") {
+        const item = outcome.value;
+        results.push({
+          monitorId: item.monitor.id,
+          status: item.checkRun.status,
+          totalMs: item.checkRun.timings.totalMs
+        });
+      }
     }
   }
 

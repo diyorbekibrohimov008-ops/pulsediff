@@ -39,13 +39,19 @@ describe("production HTTP server & SPA fallback", () => {
 
     const statusPage = await fetch(`${serverOrigin}/api/status-page/default`);
     expect(statusPage.status).toBe(200);
-    const spJson = (await statusPage.json()) as { config: { hidePlatformBranding: boolean } };
+    const spJson = (await statusPage.json()) as {
+      config: { hidePlatformBranding: boolean; planTier: string };
+    };
     expect(spJson.config.hidePlatformBranding).toBe(true);
+    expect(spJson.config.planTier).toBe("free");
 
     const spaRoute = await fetch(`${serverOrigin}/s/default`);
     expect(spaRoute.status).toBe(200);
     const html = await spaRoute.text();
     expect(html).toContain("PulseDiff");
     expect(html).toContain('<div id="root"></div>');
+
+    const malformed = await fetch(`${serverOrigin}/%E0%A4%A`);
+    expect(malformed.status).toBe(400);
   });
 });

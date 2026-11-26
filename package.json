@@ -1,13 +1,14 @@
 {
   "name": "pulsediff",
   "version": "1.0.0",
+  "description": "100% free website and API uptime monitoring with 30-second checks, live response-body diffing, auto-heal webhooks, and white-label status pages.",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node --import tsx server.mjs --dev",
     "build": "vite build",
     "start": "node --import tsx server.mjs",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

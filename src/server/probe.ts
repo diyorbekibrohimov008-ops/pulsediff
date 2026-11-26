@@ -40,20 +40,24 @@ export function isPrivateOrReservedIp(ip: string): boolean {
   }
   if (net.isIPv4(normalized)) {
     const parts = normalized.split(".").map((n) => Number(n));
-    const [a, b] = parts;
+    const [a, b, c] = parts;
     if (a === 10) return true;
     if (a === 127) return true;
     if (a === 0) return true;
     if (a === 169 && b === 254) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
+    if (a === 192 && b === 0 && c === 0) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true;
     if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a >= 224) return true;
     return false;
   }
   if (net.isIPv6(normalized)) {
     if (normalized === "::1" || normalized === "::") return true;
     if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
-    if (normalized.startsWith("fe80")) return true;
+    if (/^fe[89ab]/.test(normalized)) return true;
+    if (normalized.startsWith("ff")) return true;
     return false;
   }
   return true;
@@ -178,6 +182,27 @@ async function singleHttpProbe(
     let firstByteAt: number | null = null;
     let tlsInfo: TlsCertificateInfo | null = null;
     let settled = false;
+    const finishResolve = (
+      val: {
+        statusCode: number;
+        headers: Record<string, string>;
+        body: string;
+        truncated: boolean;
+        timings: TimingBreakdown;
+        tls: TlsCertificateInfo | null;
+      }
+    ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      resolve(val);
+    };
+    const finishReject = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      reject(err);
+    };
 
     const reqHeaders: Record<string, string> = {
       "user-agent": "PulseDiff-Monitor/1.0 (+https://pulsediff.dev)",
@@ -201,7 +226,7 @@ async function singleHttpProbe(
       agent: false,
       timeout: monitor.timeoutMs,
       rejectUnauthorized: !monitor.allowInsecureTls,
-      servername: isHttps ? url.hostname : undefined,
+      servername: isHttps && !net.isIP(url.hostname) ? url.hostname : undefined,
       lookup: resolvedIp
         ? (_host, opts, cb) => {
             const family = net.isIPv6(resolvedIp) ? 6 : 4;
@@ -242,8 +267,6 @@ async function singleHttpProbe(
       });
 
       res.on("end", () => {
-        if (settled) return;
-        settled = true;
         const endPerf = performance.now();
         const tcpDone = connectAt ?? startPerf;
         const tlsDone = isHttps ? tlsAt ?? tcpDone : tcpDone;
@@ -255,7 +278,7 @@ async function singleHttpProbe(
         const transferMs = roundMs(endPerf - fbDone);
         const totalMs = roundMs(dnsMs + (endPerf - startPerf));
 
-        resolve({
+        finishResolve({
           statusCode: res.statusCode ?? 0,
           headers: normalizeHeaders(res.headers),
           body: Buffer.concat(chunks).toString("utf8"),
@@ -273,11 +296,18 @@ async function singleHttpProbe(
       });
 
       res.on("error", (err) => {
-        if (settled) return;
-        settled = true;
-        reject(err);
+        finishReject(err);
       });
     });
+
+    const hardTimer = setTimeout(() => {
+      const timeoutErr = Object.assign(
+        new Error(`Request timed out after ${monitor.timeoutMs}ms`),
+        { code: "ETIMEDOUT" }
+      );
+      req.destroy(timeoutErr);
+      finishReject(timeoutErr);
+    }, monitor.timeoutMs + 250);
 
     req.on("socket", (socket) => {
       socket.on("connect", () => {
@@ -292,15 +322,16 @@ async function singleHttpProbe(
     });
 
     req.on("timeout", () => {
-      if (settled) return;
-      settled = true;
-      req.destroy(Object.assign(new Error(`Request timed out after ${monitor.timeoutMs}ms`), { code: "ETIMEDOUT" }));
+      const timeoutErr = Object.assign(
+        new Error(`Request timed out after ${monitor.timeoutMs}ms`),
+        { code: "ETIMEDOUT" }
+      );
+      req.destroy(timeoutErr);
+      finishReject(timeoutErr);
     });
 
     req.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
+      finishReject(err);
     });
 
     if (monitor.requestBody && monitor.method !== "GET" && monitor.method !== "HEAD") {
@@ -320,6 +351,7 @@ export async function probeEndpoint(
   let totalDnsMs = 0;
 
   try {
+    let activeMonitor = monitor;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const target = await validatePublicTargetUrl(currentUrlStr, options);
       totalDnsMs = roundMs(totalDnsMs + target.dnsMs);
@@ -357,7 +389,7 @@ export async function probeEndpoint(
         });
       }
 
-      const result = await singleHttpProbe(target.url, target.resolvedIp, target.dnsMs, monitor);
+      const result = await singleHttpProbe(target.url, target.resolvedIp, target.dnsMs, activeMonitor);
       if (result.tls) {
         lastTls = result.tls;
       }
@@ -370,6 +402,9 @@ export async function probeEndpoint(
 
       if (isRedirect) {
         currentUrlStr = new URL(result.headers.location, target.url).toString();
+        if (result.statusCode === 303 && activeMonitor.method !== "GET" && activeMonitor.method !== "HEAD") {
+          activeMonitor = { ...activeMonitor, method: "GET", requestBody: undefined };
+        }
         continue;
       }
 

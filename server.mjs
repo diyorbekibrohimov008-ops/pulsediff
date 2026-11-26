@@ -9,6 +9,8 @@ import { getKvStore } from "./src/server/store.ts";
 
 const isDev = process.argv.includes("--dev");
 const defaultPort = Number(process.env.PORT || 3000);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024; // 1 MB
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -41,8 +43,16 @@ function applySecurityHeaders(res) {
 async function readNodeRequestBody(req) {
   if (req.method === "GET" || req.method === "HEAD") return undefined;
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buf.length;
+    if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+      const err = new Error("Request body too large");
+      err.statusCode = 413;
+      throw err;
+    }
+    chunks.push(buf);
   }
   return Buffer.concat(chunks);
 }
@@ -63,11 +73,19 @@ export async function createPulseDiffServer(options = {}) {
     });
   }
 
-  const distDir = path.resolve(process.cwd(), "dist");
+  const distDir = path.resolve(__dirname, "dist");
 
   const server = http.createServer(async (req, res) => {
     applySecurityHeaders(res);
-    const reqUrl = new URL(req.url || "/", origin);
+    let reqUrl;
+    try {
+      reqUrl = new URL(req.url || "/", origin);
+    } catch {
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: "Malformed request URL" }));
+      return;
+    }
 
     if (reqUrl.pathname.startsWith("/api/")) {
       try {
@@ -96,6 +114,12 @@ export async function createPulseDiffServer(options = {}) {
         const resBuf = Buffer.from(await webRes.arrayBuffer());
         res.end(resBuf);
       } catch (err) {
+        if (err && typeof err === "object" && "statusCode" in err && err.statusCode === 413) {
+          res.statusCode = 413;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ error: "Request body too large" }));
+          return;
+        }
         console.error("API error:", err);
         res.statusCode = 500;
         res.setHeader("content-type", "application/json");
@@ -113,9 +137,20 @@ export async function createPulseDiffServer(options = {}) {
     }
 
     // Production static file serving + SPA fallback
-    const cleanRel = decodeURIComponent(reqUrl.pathname).replace(/^\/+/, "");
+    let decodedPathname;
+    try {
+      decodedPathname = decodeURIComponent(reqUrl.pathname);
+    } catch {
+      res.statusCode = 400;
+      res.end("Bad request");
+      return;
+    }
+    const cleanRel = decodedPathname.replace(/^\/+/, "");
     const candidate = path.resolve(distDir, cleanRel || "index.html");
-    const safePath = candidate.startsWith(distDir) ? candidate : path.join(distDir, "index.html");
+    const safePath =
+      candidate === distDir || candidate.startsWith(distDir + path.sep)
+        ? candidate
+        : path.join(distDir, "index.html");
 
     let filePath = safePath;
     try {
@@ -183,9 +218,11 @@ async function main() {
   const host = process.env.HOST || "0.0.0.0";
   const instance = await createPulseDiffServer({ port: defaultPort, host, isDev, enableScheduler: true });
   console.log(`PulseDiff server listening on ${instance.origin} (${isDev ? "dev" : "prod"})`);
-  process.on("SIGTERM", () => {
+  const shutdown = () => {
     instance.close().then(() => process.exit(0));
-  });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 const isEntrypoint =

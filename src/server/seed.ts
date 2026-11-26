@@ -9,7 +9,35 @@ export async function ensureSeededWorkspace(
   opts?: { skipInitialProbe?: boolean; probeOptions?: ProbeOptions }
 ): Promise<void> {
   const marker = await store.getJSON<{ seededAt: number }>("settings/seeded-v1");
-  if (marker) return;
+  if (marker) {
+    // Keep the built-in sandbox monitor synced to the active server origin/port.
+    const simMonitor = await store.getJSON<Monitor>("monitors/mon_checkout_sim");
+    if (simMonitor?.isSimulator) {
+      const expectedTarget = `${origin}/api/sim/target?key=default`;
+      const expectedRestart = `${origin}/api/sim/restart?key=default`;
+      let changed = false;
+      const nextMonitor: Monitor = { ...simMonitor };
+      if (simMonitor.url.includes("/api/sim/target") && simMonitor.url !== expectedTarget) {
+        nextMonitor.url = expectedTarget;
+        changed = true;
+      }
+      if (
+        simMonitor.autoHealRule?.webhookUrl.includes("/api/sim/restart") &&
+        simMonitor.autoHealRule.webhookUrl !== expectedRestart
+      ) {
+        nextMonitor.autoHealRule = {
+          ...simMonitor.autoHealRule,
+          webhookUrl: expectedRestart
+        };
+        changed = true;
+      }
+      if (changed) {
+        nextMonitor.updatedAt = Date.now();
+        await saveMonitor(store, nextMonitor);
+      }
+    }
+    return;
+  }
 
   const now = Date.now();
   await getStatusPageConfig(store, "default");

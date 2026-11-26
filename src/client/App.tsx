@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Activity,
   AlertTriangle,
+  CheckCircle2,
   Globe,
   Lock,
-  Palette,
   Plus,
+  Radio,
   RefreshCw,
-  ShieldCheck,
-  Zap
+  XCircle
 } from "lucide-react";
 import type {
   DashboardPayload,
@@ -21,15 +20,34 @@ import { api } from "./api.ts";
 import { AddMonitorModal } from "./components/AddMonitorModal.tsx";
 import { BrandingSettings } from "./components/BrandingSettings.tsx";
 import { MonitorDetail } from "./components/MonitorDetail.tsx";
+import { OscilloscopeTrace } from "./components/OscilloscopeTrace.tsx";
 import { StatusPageView } from "./components/StatusPageView.tsx";
 
 type MainTab = "monitors" | "status_preview" | "branding";
+
+function safeDecodeSlug(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+function formatHostPath(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const shortPath = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.host}${shortPath}`;
+  } catch {
+    return rawUrl;
+  }
+}
 
 export function App() {
   const [standaloneSlug, setStandaloneSlug] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     const match = window.location.pathname.match(/^\/(?:s|status)\/([^/]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
+    return match ? safeDecodeSlug(match[1]) : null;
   });
 
   const [tab, setTab] = useState<MainTab>("monitors");
@@ -50,7 +68,16 @@ export function App() {
   const [liveAutoTick, setLiveAutoTick] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Check if current hostname maps to a tenant's white-label custom domain.
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const detailReqSeqRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  // Check if current hostname maps to a custom status page domain.
   useEffect(() => {
     if (standaloneSlug) return;
     const host = window.location.hostname;
@@ -65,12 +92,14 @@ export function App() {
       .catch(() => null);
   }, [standaloneSlug]);
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setToast(msg);
-    setTimeout(() => {
-      setToast((prev) => (prev === msg ? null : prev));
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
     }, 4500);
-  };
+  }, []);
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -82,18 +111,23 @@ export function App() {
         return data.monitors[0]?.monitor.id ?? null;
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load dashboard");
+      setError(err instanceof Error ? err.message : "Could not load watched sites");
     } finally {
       setLoading(false);
     }
   }, []);
 
   const loadDetail = useCallback(async (id: string) => {
+    const seq = ++detailReqSeqRef.current;
     try {
       const data = await api.getMonitorDetail(id);
-      setDetail(data);
+      if (seq === detailReqSeqRef.current) {
+        setDetail(data);
+      }
     } catch {
-      setDetail(null);
+      if (seq === detailReqSeqRef.current) {
+        setDetail(null);
+      }
     }
   }, []);
 
@@ -107,7 +141,7 @@ export function App() {
     loadDetail(selectedId);
   }, [selectedId, loadDetail, standaloneSlug]);
 
-  // Live 15-second UI refresh & optional 30-second active probing loop while dashboard is open.
+  // Live 15-second UI refresh & optional 30-second active check loop while open.
   useEffect(() => {
     if (standaloneSlug) return;
     const interval = setInterval(async () => {
@@ -148,9 +182,9 @@ export function App() {
     try {
       const res = await api.runDueProbes(true);
       await refreshAll();
-      showToast(`Probed ${res.checkedCount} endpoint(s) with full TLS & body checks.`);
+      showToast(`Checked ${res.checkedCount} website${res.checkedCount === 1 ? "" : "s"}.`);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Probe failed");
+      showToast(err instanceof Error ? err.message : "Check failed");
     } finally {
       setProbingAll(false);
     }
@@ -162,6 +196,8 @@ export function App() {
     try {
       await api.checkMonitorNow(selectedId);
       await refreshAll(selectedId);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Check failed");
     } finally {
       setCheckingOne(false);
     }
@@ -173,9 +209,9 @@ export function App() {
     try {
       await api.captureBaseline(selectedId);
       await refreshAll(selectedId);
-      showToast("Healthy response baseline updated.");
+      showToast("Saved current healthy response as baseline.");
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to capture baseline");
+      showToast(err instanceof Error ? err.message : "Could not save baseline");
     } finally {
       setCapturingBaseline(false);
     }
@@ -183,18 +219,27 @@ export function App() {
 
   const handleTogglePause = async () => {
     if (!detail) return;
-    await api.updateMonitor(detail.monitor.id, { paused: !detail.monitor.paused });
-    await refreshAll(detail.monitor.id);
+    try {
+      await api.updateMonitor(detail.monitor.id, { paused: !detail.monitor.paused });
+      await refreshAll(detail.monitor.id);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not update website");
+    }
   };
 
   const handleDelete = async () => {
     if (!detail) return;
     const id = detail.monitor.id;
-    await api.deleteMonitor(id);
-    setSelectedId(null);
-    setDetail(null);
-    await loadDashboard();
-    showToast(`Deleted monitor "${detail.monitor.name}".`);
+    const removedName = detail.monitor.name;
+    try {
+      await api.deleteMonitor(id);
+      setSelectedId(null);
+      setDetail(null);
+      await loadDashboard();
+      showToast(`Stopped watching "${removedName}".`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not delete website");
+    }
   };
 
   const handleTestHeal = async () => {
@@ -205,11 +250,11 @@ export function App() {
       await refreshAll(selectedId);
       showToast(
         res.triggered
-          ? `Auto-heal webhook dispatched (HTTP ${res.delivery.responseStatus}).`
-          : `Webhook response: ${res.delivery.error || res.delivery.status}`
+          ? `Auto-fix rule ran (HTTP ${res.delivery.responseStatus}).`
+          : `Auto-fix rule response: ${res.delivery.error || res.delivery.status}`
       );
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to trigger webhook");
+      showToast(err instanceof Error ? err.message : "Could not test auto-fix rule");
     } finally {
       setTestingHeal(false);
     }
@@ -223,15 +268,13 @@ export function App() {
       await api.checkMonitorNow(selectedId);
       await refreshAll(selectedId);
       if (mode === "error_500_json") {
-        showToast(
-          "500 JSON fault captured, body diff stored, & auto-heal webhook restarted the container!"
-        );
+        showToast("500 JSON error captured, exact change saved, and auto-fix rule restarted the sandbox.");
       } else if (mode === "error_502_html") {
-        showToast("502 HTML trace captured & auto-heal webhook executed!");
+        showToast("502 HTML error captured and auto-fix rule ran.");
       } else if (mode === "slow_degraded") {
-        showToast("750ms latency spike recorded as DEGRADED.");
+        showToast("750 ms latency spike recorded as slow.");
       } else {
-        showToast("Verification probe passed — endpoint healthy & incident resolved!");
+        showToast("Recovery check passed — website is healthy again.");
       }
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Simulation failed");
@@ -245,98 +288,110 @@ export function App() {
     setDashboard({ ...dashboard, statusPage: cfg });
   };
 
-  const upCount =
-    dashboard?.monitors.filter((m) => m.monitor.status === "up").length ?? 0;
-  const downCount =
-    dashboard?.monitors.filter((m) => m.monitor.status === "down").length ?? 0;
-  const degradedCount =
-    dashboard?.monitors.filter((m) => m.monitor.status === "degraded").length ?? 0;
+  const totalCount = dashboard?.monitors.length ?? 0;
+  const upCount = dashboard?.monitors.filter((m) => m.monitor.status === "up").length ?? 0;
+  const downMonitors = dashboard?.monitors.filter((m) => m.monitor.status === "down") ?? [];
+  const degradedMonitors = dashboard?.monitors.filter((m) => m.monitor.status === "degraded") ?? [];
+  const downCount = downMonitors.length;
+  const degradedCount = degradedMonitors.length;
+
+  const avgMsList = (dashboard?.monitors ?? [])
+    .map((m) => m.latestRun?.timings.totalMs)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  const avgResponseMs =
+    avgMsList.length > 0
+      ? Math.round(avgMsList.reduce((a, b) => a + b, 0) / avgMsList.length)
+      : null;
+
+  // Build combined live pulse points for the header oscilloscope readout.
+  const combinedPulsePoints =
+    dashboard?.monitors
+      .flatMap((m) => m.recentStatuses.slice(-8))
+      .sort((a, b) => a.checkedAt - b.checkedAt)
+      .slice(-24) ?? [];
+
+  const overallState: "up" | "degraded" | "down" =
+    downCount > 0 ? "down" : degradedCount > 0 ? "degraded" : "up";
+
+  const bannerHeadline =
+    totalCount === 0
+      ? "Ready to watch your first website"
+      : downCount > 0
+      ? `${downCount} website${downCount === 1 ? " is" : "s are"} down`
+      : degradedCount > 0
+      ? `${degradedCount} website${degradedCount === 1 ? " is" : "s are"} running slow`
+      : "All websites healthy";
+
+  const bannerDetail =
+    totalCount === 0
+      ? "Add any website or API URL to start free 30-second checks."
+      : downCount > 0
+      ? `Issue detected on ${downMonitors[0].monitor.name}. Select it below to see what changed.`
+      : degradedCount > 0
+      ? `${degradedMonitors[0].monitor.name} responded slower than its speed limit.`
+      : `${upCount} of ${totalCount} watched websites responding normally.`;
 
   return (
-    <div className="min-h-screen bg-[#090d16] text-slate-100">
-      {/* Top Navbar */}
-      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090d16]/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10">
-              <Activity className="h-5 w-5 text-emerald-400" />
+    <div className="blueprint-canvas min-h-screen overflow-x-clip text-slate-100">
+      {/* Top Instrument Navigation Bar */}
+      <header className="sticky top-0 z-30 border-b border-[#1e3048] bg-[#0b121c]/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-start gap-3 sm:items-center">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-cyan-400/40 bg-[#111c2b]">
+              <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+                <path
+                  d="M2 13h5l2.5-6 3.5 10 2.5-4H22"
+                  fill="none"
+                  stroke="#22d3ee"
+                  strokeWidth="2.1"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </div>
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold tracking-tight text-slate-100">PulseDiff</span>
-                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-500/30">
-                  30s Checks + Auto-Heal · $10/mo All-In
+                <span className="text-base font-bold tracking-tight text-slate-100">PulseDiff</span>
+                <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-emerald-300">
+                  Free
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500">
-                Payload Diffing · TLS Handshake Breakdown · White-Label Status Pages
+              <p className="text-xs leading-snug text-slate-300">
+                Watch your websites and APIs 24/7 and see the exact change if something breaks — free.
               </p>
             </div>
           </div>
 
-          <nav className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setTab("monitors")}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                tab === "monitors"
-                  ? "bg-slate-800 text-slate-100"
-                  : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-              }`}
+          <div className="flex flex-wrap items-center justify-between gap-2 sm:justify-start lg:shrink-0">
+            <nav
+              aria-label="Main sections"
+              className="flex items-center rounded border border-[#1e3048] bg-[#070d14] p-0.5"
             >
-              <Activity className="h-3.5 w-3.5" />
-              Monitors
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("status_preview")}
-              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:bg-slate-900 hover:text-slate-200"
-            >
-              <Globe className="h-3.5 w-3.5" />
-              Public Status Page
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("branding")}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                tab === "branding"
-                  ? "bg-slate-800 text-slate-100"
-                  : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-              }`}
-            >
-              <Palette className="h-3.5 w-3.5" />
-              White-Label & Pricing
-            </button>
-          </nav>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setLiveAutoTick((v) => !v)}
-              title="Automatically execute due 30s probes while dashboard is open"
-              className={`hidden items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium sm:inline-flex ${
-                liveAutoTick
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                  : "border-slate-800 bg-slate-900 text-slate-400"
-              }`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  liveAutoTick ? "animate-pulse bg-emerald-400" : "bg-slate-500"
+              <button
+                type="button"
+                onClick={() => setTab("monitors")}
+                className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition sm:px-3 ${
+                  tab === "monitors"
+                    ? "bg-[#162436] text-cyan-100"
+                    : "text-slate-400 hover:text-slate-200"
                 }`}
-              />
-              {liveAutoTick ? "30s Live Loop On" : "30s Live Loop Paused"}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleProbeAll}
-              disabled={probingAll}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${probingAll ? "animate-spin" : ""}`} />
-              Probe All
-            </button>
+              >
+                <Radio className="h-3.5 w-3.5" />
+                Watched sites
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab("branding")}
+                className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition sm:px-3 ${
+                  tab === "branding"
+                    ? "bg-[#162436] text-cyan-100"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Globe className="h-3.5 w-3.5" />
+                Status page
+              </button>
+            </nav>
 
             <button
               type="button"
@@ -344,10 +399,10 @@ export function App() {
                 setEditingMonitor(null);
                 setModalOpen(true);
               }}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3.5 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400"
+              className="inline-flex items-center gap-1.5 rounded bg-cyan-400 px-3 py-2 text-xs font-semibold text-[#06111a] transition hover:bg-cyan-300 sm:px-3.5"
             >
-              <Plus className="h-3.5 w-3.5" />
-              New Monitor
+              <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
+              Add website to watch
             </button>
           </div>
         </div>
@@ -355,21 +410,24 @@ export function App() {
 
       {/* Toast Notification */}
       {toast && (
-        <div className="fixed right-4 bottom-4 z-50 max-w-md rounded-xl border border-emerald-500/40 bg-[#0d1526] px-4 py-3 text-xs font-medium text-emerald-200 shadow-2xl">
+        <div
+          role="status"
+          className="fixed right-4 bottom-4 z-50 max-w-md rounded border border-cyan-400/50 bg-[#111c2b] px-4 py-3 text-xs font-medium text-cyan-100 shadow-2xl"
+        >
           {toast}
         </div>
       )}
 
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+      <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6">
         {error && (
-          <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+          <div className="mb-4 rounded border border-rose-500/45 bg-rose-500/12 px-4 py-3 text-xs text-rose-100">
             {error}
           </div>
         )}
 
         {loading && !dashboard ? (
-          <div className="flex h-64 items-center justify-center text-sm text-slate-400">
-            Initializing monitors and running baseline probes...
+          <div className="flex h-64 items-center justify-center rounded-md border border-[#1e3048] bg-[#111c2b] text-sm text-slate-300">
+            Loading your watched websites...
           </div>
         ) : tab === "branding" && dashboard ? (
           <BrandingSettings
@@ -379,171 +437,272 @@ export function App() {
           />
         ) : dashboard ? (
           <div className="space-y-5">
-            {/* Top Operational Summary Strip */}
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-              <div className="rounded-xl border border-slate-800/80 bg-slate-900/40 px-4 py-3">
-                <div className="text-[11px] text-slate-500">Operational</div>
-                <div className="mt-1 flex items-center gap-2 font-mono text-xl font-bold text-emerald-400">
-                  <ShieldCheck className="h-4 w-4" />
-                  {upCount} / {dashboard.monitors.length}
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-800/80 bg-slate-900/40 px-4 py-3">
-                <div className="text-[11px] text-slate-500">Degraded / Down</div>
-                <div
-                  className={`mt-1 flex items-center gap-2 font-mono text-xl font-bold ${
-                    downCount > 0
-                      ? "text-rose-400"
-                      : degradedCount > 0
-                      ? "text-amber-300"
-                      : "text-slate-300"
-                  }`}
-                >
-                  <AlertTriangle className="h-4 w-4" />
-                  {degradedCount + downCount}
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-800/80 bg-slate-900/40 px-4 py-3">
-                <div className="text-[11px] text-slate-500">Auto-Heal Triggers</div>
-                <div className="mt-1 flex items-center gap-2 font-mono text-xl font-bold text-amber-300">
-                  <Zap className="h-4 w-4" />
-                  {dashboard.recentDeliveries.filter((d) => d.status === "dispatched").length}
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-800/80 bg-slate-900/40 px-4 py-3">
-                <div className="text-[11px] text-slate-500">White-Label Page</div>
-                <div className="mt-1 truncate text-xs font-semibold text-slate-200">
-                  {dashboard.statusPage.customDomain || `/s/${dashboard.statusPage.slug}`}
-                </div>
-                <div className="mt-0.5 text-[10px] text-emerald-400">
-                  {dashboard.statusPage.hidePlatformBranding ? "Zero Branding Active" : "Branded"}
-                </div>
-              </div>
-              <div className="col-span-2 rounded-xl border border-slate-800/80 bg-slate-900/40 px-4 py-3 lg:col-span-1">
-                <div className="text-[11px] text-slate-500">Scheduler Engine</div>
-                <div className="mt-1 truncate text-xs font-medium text-slate-200">
-                  {dashboard.runtimeInfo.schedulerMode}
-                </div>
-                <div className="mt-0.5 font-mono text-[10px] text-slate-500">
-                  {dashboard.runtimeInfo.lastTickAt
-                    ? `Last tick ${new Date(dashboard.runtimeInfo.lastTickAt).toLocaleTimeString()}`
-                    : "Active"}
-                </div>
-              </div>
-            </div>
+            {/* Unmistakable Top Health Status Instrument Banner */}
+            <section
+              aria-label="Overall health status"
+              className={`overflow-hidden rounded-md border ${
+                overallState === "down"
+                  ? "border-rose-500/60 bg-[#18121c]"
+                  : overallState === "degraded"
+                  ? "border-amber-500/50 bg-[#18191c]"
+                  : "border-[#1e3048] bg-[#111c2b]"
+              }`}
+            >
+              <div className="grid grid-cols-1 items-center gap-4 px-5 py-4 lg:grid-cols-12">
+                {/* Left: Clear Status Readout */}
+                <div className="flex items-start gap-3.5 lg:col-span-6">
+                  <div
+                    className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded border ${
+                      overallState === "down"
+                        ? "border-rose-500/50 bg-rose-500/15 text-rose-400"
+                        : overallState === "degraded"
+                        ? "border-amber-500/50 bg-amber-500/15 text-amber-400"
+                        : "border-emerald-500/45 bg-emerald-500/15 text-emerald-400"
+                    }`}
+                  >
+                    {overallState === "down" ? (
+                      <XCircle className="h-5 w-5" />
+                    ) : overallState === "degraded" ? (
+                      <AlertTriangle className="h-5 w-5" />
+                    ) : (
+                      <CheckCircle2 className="h-5 w-5" />
+                    )}
+                  </div>
 
-            {/* Main Split: Left Monitor List + Right Diagnostic Inspector */}
+                  <div>
+                    <h1 className="text-xl font-bold tracking-tight text-slate-50 sm:text-2xl">
+                      {bannerHeadline}
+                    </h1>
+                    <p className="mt-0.5 text-sm text-slate-300">{bannerDetail}</p>
+                  </div>
+                </div>
+
+                {/* Middle: Calibrated Oscilloscope Pulse Screen */}
+                <div className="scope-graticule min-w-0 overflow-hidden rounded border border-[#1e3048] px-3 py-2 lg:col-span-4">
+                  <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Live response pulse</span>
+                    <span className="font-mono tabular-nums text-cyan-300">
+                      {avgResponseMs !== null ? `Avg ${avgResponseMs} ms` : "Standby"}
+                    </span>
+                  </div>
+                  <OscilloscopeTrace
+                    points={combinedPulsePoints}
+                    status={overallState}
+                    width={320}
+                    height={40}
+                    showGrid
+                    responsive
+                    className="h-10 w-full"
+                  />
+                </div>
+
+                {/* Right: Quick Instrument Controls */}
+                <div className="flex flex-wrap items-center gap-2 lg:col-span-2 lg:justify-end">
+                  <button
+                    type="button"
+                    onClick={handleProbeAll}
+                    disabled={probingAll}
+                    className="inline-flex items-center gap-1.5 rounded border border-[#2c4566] bg-[#162436] px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-cyan-400/60 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${probingAll ? "animate-spin" : ""}`} />
+                    Check all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLiveAutoTick((v) => !v)}
+                    title="Toggle automatic 30-second live checks while this page is open"
+                    className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-2 text-xs font-medium transition ${
+                      liveAutoTick
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                        : "border-[#1e3048] bg-[#070d14] text-slate-400"
+                    }`}
+                  >
+                    <span
+                      className={`h-2 w-2 rounded-full ${
+                        liveAutoTick ? "bg-emerald-400" : "bg-slate-500"
+                      }`}
+                    />
+                    {liveAutoTick ? "Auto 30s" : "Manual"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Calibrated Hairline Telemetry Strip (no middle dots) */}
+              <div className="grid grid-cols-2 divide-y divide-[#1e3048] border-t border-[#1e3048] bg-[#0c1522] text-xs sm:grid-cols-4 sm:divide-x sm:divide-y-0">
+                <div className="flex items-center justify-between px-4 py-2">
+                  <span className="text-slate-400">Healthy sites</span>
+                  <span className="font-mono font-semibold tabular-nums text-emerald-300">
+                    {upCount} / {totalCount}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-2">
+                  <span className="text-slate-400">Avg speed</span>
+                  <span className="font-mono font-semibold tabular-nums text-slate-100">
+                    {avgResponseMs !== null ? `${avgResponseMs} ms` : "—"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-2">
+                  <span className="text-slate-400">Open alerts</span>
+                  <span
+                    className={`font-mono font-semibold tabular-nums ${
+                      downCount + degradedCount > 0 ? "text-rose-300" : "text-slate-200"
+                    }`}
+                  >
+                    {downCount + degradedCount}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-2">
+                  <span className="text-slate-400">Public page</span>
+                  <button
+                    type="button"
+                    onClick={() => setTab("status_preview")}
+                    className="font-mono text-cyan-300 hover:text-cyan-200"
+                  >
+                    /s/{dashboard.statusPage.slug}
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            {/* Main Instrument Bench: Watched Sites Rail + Site Inspector */}
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-              <aside className="space-y-2.5 lg:col-span-4">
-                <div className="flex items-center justify-between px-1">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                    Monitored Endpoints ({dashboard.monitors.length})
-                  </h3>
+              {/* Left Rail: Clean List of Watched Websites */}
+              <aside className="min-w-0 space-y-3 lg:col-span-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-100">
+                    Watched sites ({dashboard.monitors.length})
+                  </h2>
                   <button
                     type="button"
                     onClick={() => {
                       setEditingMonitor(null);
                       setModalOpen(true);
                     }}
-                    className="text-xs font-medium text-emerald-400 hover:text-emerald-300"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-cyan-300 hover:text-cyan-200"
                   >
-                    + Add
+                    <Plus className="h-3.5 w-3.5" />
+                    Add website
                   </button>
                 </div>
 
-                {dashboard.monitors.map(({ monitor, latestRun, recentStatuses, uptimePercent }) => {
-                  const selected = selectedId === monitor.id;
-                  const dotColor =
-                    monitor.status === "up"
-                      ? "bg-emerald-400"
-                      : monitor.status === "degraded"
-                      ? "bg-amber-400"
-                      : monitor.status === "down"
-                      ? "bg-rose-500"
-                      : "bg-slate-500";
-                  return (
+                {dashboard.monitors.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-[#2c4566] bg-[#111c2b] p-6 text-center">
+                    <p className="text-sm font-medium text-slate-100">
+                      No websites watched yet
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Add your website or API URL to check uptime every 30 seconds for free.
+                    </p>
                     <button
-                      key={monitor.id}
                       type="button"
-                      onClick={() => setSelectedId(monitor.id)}
-                      className={`w-full rounded-xl border p-3.5 text-left transition ${
-                        selected
-                          ? "border-emerald-500/50 bg-slate-900 shadow-lg shadow-emerald-950/20"
-                          : "border-slate-800/80 bg-slate-900/40 hover:border-slate-700 hover:bg-slate-900/70"
-                      }`}
+                      onClick={() => {
+                        setEditingMonitor(null);
+                        setModalOpen(true);
+                      }}
+                      className="mt-4 inline-flex items-center gap-1.5 rounded bg-cyan-400 px-3.5 py-2 text-xs font-semibold text-[#06111a] hover:bg-cyan-300"
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className={`h-2 w-2 shrink-0 rounded-full ${dotColor}`} />
-                            <span className="truncate text-sm font-semibold text-slate-100">
-                              {monitor.name}
-                            </span>
-                          </div>
-                          <div className="mt-1 truncate font-mono text-[11px] text-slate-500">
-                            {monitor.url}
-                          </div>
-                        </div>
-
-                        <div className="shrink-0 text-right font-mono">
-                          <div className="text-xs font-semibold text-slate-200">
-                            {latestRun ? `${latestRun.timings.totalMs}ms` : "—"}
-                          </div>
-                          <div className="text-[10px] text-emerald-400">
-                            {uptimePercent.toFixed(1)}%
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Mini Check Strip */}
-                      <div className="mt-3 flex h-3 gap-0.5">
-                        {recentStatuses.length > 0 ? (
-                          recentStatuses.slice(-20).map((s) => (
-                            <div
-                              key={s.id}
-                              className={`h-full flex-1 rounded-[2px] ${
-                                s.status === "up"
-                                  ? "bg-emerald-500/80"
-                                  : s.status === "degraded"
-                                  ? "bg-amber-400/90"
-                                  : "bg-rose-500"
-                              }`}
-                            />
-                          ))
-                        ) : (
-                          <div className="h-full w-full rounded-[2px] bg-slate-800" />
-                        )}
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-400">
-                        <div className="flex items-center gap-2">
-                          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono">
-                            {monitor.intervalSeconds}s
-                          </span>
-                          {latestRun?.tls?.daysRemaining !== null &&
-                            latestRun?.tls?.daysRemaining !== undefined && (
-                              <span className="inline-flex items-center gap-0.5 text-slate-400">
-                                <Lock className="h-2.5 w-2.5" />
-                                SSL {latestRun.tls.daysRemaining}d
-                              </span>
-                            )}
-                          {monitor.autoHealRule?.enabled && (
-                            <span className="inline-flex items-center gap-0.5 text-amber-300">
-                              <Zap className="h-2.5 w-2.5" />
-                              Auto-Heal
-                            </span>
-                          )}
-                        </div>
-                        <span className="font-mono">
-                          HTTP {latestRun?.statusCode ?? "—"}
-                        </span>
-                      </div>
+                      <Plus className="h-3.5 w-3.5" />
+                      Add website to watch
                     </button>
-                  );
-                })}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-[#1e3048] overflow-hidden rounded-md border border-[#1e3048] bg-[#111c2b]">
+                    {dashboard.monitors.map(({ monitor, latestRun, recentStatuses, uptimePercent }) => {
+                      const selected = selectedId === monitor.id;
+                      const ledColor =
+                        monitor.status === "up"
+                          ? "bg-emerald-400"
+                          : monitor.status === "degraded"
+                          ? "bg-amber-400"
+                          : monitor.status === "down"
+                          ? "bg-rose-500"
+                          : "bg-slate-500";
+                      const statusWord =
+                        monitor.status === "up"
+                          ? "Up"
+                          : monitor.status === "degraded"
+                          ? "Slow"
+                          : monitor.status === "down"
+                          ? "Down"
+                          : monitor.status === "paused"
+                          ? "Paused"
+                          : "Pending";
+
+                      return (
+                        <button
+                          key={monitor.id}
+                          type="button"
+                          onClick={() => setSelectedId(monitor.id)}
+                          aria-current={selected ? "true" : undefined}
+                          className={`block w-full border-l-2 px-4 py-3.5 text-left transition ${
+                            selected
+                              ? "border-l-cyan-400 bg-[#162436]"
+                              : "border-l-transparent bg-[#111c2b] hover:bg-[#142031]"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`h-2.5 w-2.5 shrink-0 rounded-full ${ledColor}`}
+                                  aria-label={statusWord}
+                                />
+                                <span className="truncate text-sm font-semibold text-slate-100">
+                                  {monitor.name}
+                                </span>
+                              </div>
+                              <div className="mt-1 truncate pl-4.5 font-mono text-[11px] text-slate-400">
+                                {formatHostPath(monitor.url)}
+                              </div>
+                            </div>
+
+                            <div className="shrink-0 text-right font-mono tabular-nums">
+                              <div className="text-sm font-semibold text-slate-100">
+                                {latestRun ? `${Math.round(latestRun.timings.totalMs)} ms` : "—"}
+                              </div>
+                              <div
+                                className={`text-[11px] ${
+                                  monitor.status === "down"
+                                    ? "text-rose-300"
+                                    : monitor.status === "degraded"
+                                    ? "text-amber-300"
+                                    : "text-emerald-300"
+                                }`}
+                              >
+                                {statusWord}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Mini Oscilloscope Latency Sparkline */}
+                          <div className="mt-2.5 flex items-center justify-between gap-3 pl-4.5">
+                            <OscilloscopeTrace
+                              points={recentStatuses.slice(-16)}
+                              status={monitor.status}
+                              width={140}
+                              height={24}
+                              className="h-6 w-[140px] shrink-0"
+                            />
+                            <div className="flex items-center gap-2.5 font-mono text-[11px] tabular-nums text-slate-400">
+                              <span>{uptimePercent.toFixed(1)}%</span>
+                              {latestRun?.tls?.daysRemaining !== null &&
+                                latestRun?.tls?.daysRemaining !== undefined && (
+                                  <span className="inline-flex items-center gap-0.5 text-slate-400">
+                                    <Lock className="h-2.5 w-2.5" />
+                                    {latestRun.tls.daysRemaining}d
+                                  </span>
+                                )}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </aside>
 
-              <section className="lg:col-span-8">
+              {/* Right Panel: Selected Website Detail Inspector */}
+              <section className="min-w-0 lg:col-span-8" aria-label="Selected website details">
                 {detail ? (
                   <MonitorDetail
                     detail={detail}
@@ -564,8 +723,8 @@ export function App() {
                     onTriggerSimOutage={handleTriggerSimOutage}
                   />
                 ) : (
-                  <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-10 text-center text-sm text-slate-400">
-                    Select a monitor on the left or create a new endpoint monitor.
+                  <div className="rounded-md border border-[#1e3048] bg-[#111c2b] p-10 text-center text-sm text-slate-400">
+                    Select any watched site on the left to inspect its speed, SSL status, and response changes.
                   </div>
                 )}
               </section>
@@ -586,11 +745,12 @@ export function App() {
             setEditingMonitor(null);
             setSelectedId(savedId);
             await refreshAll(savedId);
-            showToast("Monitor saved & live probe executed.");
+            showToast("Website saved and first check completed.");
           }}
         />
       )}
     </div>
   );
 }
+
 export default App;

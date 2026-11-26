@@ -184,7 +184,7 @@ export interface StatusPageConfig {
   customDomainRecords: string[];
   hidePlatformBranding: boolean;
   showFailureTracesPublicly: boolean;
-  planTier: "starter_10" | "free";
+  planTier: "free";
   subMinuteMode: "smart" | "always";
   updatedAt: number;
 }

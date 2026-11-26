@@ -63,6 +63,56 @@ async function parseJsonBody<T>(req: Request): Promise<T | null> {
   }
 }
 
+const VALID_MONITOR_METHODS = new Set<Monitor["method"]>(["GET", "POST", "HEAD"]);
+const VALID_WEBHOOK_METHODS = new Set<AutoHealRule["method"]>(["POST", "PUT", "GET"]);
+const VALID_PROVIDERS = new Set<AutoHealRule["provider"]>([
+  "vercel",
+  "netlify",
+  "github_action",
+  "aws_lambda",
+  "custom"
+]);
+
+function safeDecodeParam(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeStringRecord(input: unknown): Record<string, string> | null {
+  if (input === undefined || input === null) return {};
+  if (typeof input !== "object" || Array.isArray(input)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof v !== "string") {
+      out[k] = String(v ?? "");
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function finiteOrDefault(value: unknown, fallback: number): number {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function isValidHexColor(value: string): boolean {
+  return /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function sanitizeOptionalSecret(reqUrl: URL): string {
   return `${reqUrl.protocol}//${reqUrl.host}`;
 }
@@ -268,42 +318,89 @@ export async function handleApiRequest(
       return badRequest(err instanceof Error ? err.message : "Invalid monitor URL");
     }
 
+    const method = body.method ?? "GET";
+    if (!VALID_MONITOR_METHODS.has(method)) {
+      return badRequest("Method must be GET, POST, or HEAD");
+    }
+
+    const parsedHeaders = sanitizeStringRecord(body.headers);
+    if (!parsedHeaders) {
+      return badRequest("Monitor headers must be a JSON object");
+    }
+
+    const expectedStatusMin = Math.round(finiteOrDefault(body.expectedStatusMin, 200));
+    const expectedStatusMax = Math.round(finiteOrDefault(body.expectedStatusMax, 299));
+    if (
+      expectedStatusMin < 100 ||
+      expectedStatusMax > 599 ||
+      expectedStatusMin > expectedStatusMax
+    ) {
+      return badRequest("Expected HTTP status range must be between 100 and 599 (min <= max)");
+    }
+
     const now = Date.now();
     const interval = [30, 60, 300].includes(Number(body.intervalSeconds))
       ? (Number(body.intervalSeconds) as 30 | 60 | 300)
       : 30;
 
-    const autoHealRule: AutoHealRule | null =
-      body.autoHealRule && body.autoHealRule.webhookUrl?.trim()
-        ? {
-            id: `heal_${crypto.randomUUID().slice(0, 10)}`,
-            name: body.autoHealRule.name?.trim() || "Auto-Heal Webhook",
-            provider: body.autoHealRule.provider || "custom",
-            enabled: body.autoHealRule.enabled ?? true,
-            webhookUrl: body.autoHealRule.webhookUrl.trim(),
-            method: body.autoHealRule.method || "POST",
-            headers: body.autoHealRule.headers || {},
-            payloadTemplate: body.autoHealRule.payloadTemplate || "",
-            secret: body.autoHealRule.secret || "",
-            triggerAfterFailures: Math.max(1, Number(body.autoHealRule.triggerAfterFailures || 1)),
-            cooldownSeconds: Math.max(5, Number(body.autoHealRule.cooldownSeconds || 300)),
-            lastTriggeredAt: null
-          }
-        : null;
+    let autoHealRule: AutoHealRule | null = null;
+    if (body.autoHealRule && body.autoHealRule.webhookUrl?.trim()) {
+      const hookUrl = body.autoHealRule.webhookUrl.trim();
+      try {
+        await validatePublicTargetUrl(hookUrl, probeOptions);
+      } catch (err) {
+        return badRequest(err instanceof Error ? err.message : "Invalid auto-fix webhook URL");
+      }
+      const hookMethod = body.autoHealRule.method || "POST";
+      if (!VALID_WEBHOOK_METHODS.has(hookMethod)) {
+        return badRequest("Auto-fix webhook method must be POST, PUT, or GET");
+      }
+      const hookProvider = body.autoHealRule.provider || "custom";
+      if (!VALID_PROVIDERS.has(hookProvider)) {
+        return badRequest("Unsupported auto-fix provider");
+      }
+      const hookHeaders = sanitizeStringRecord(body.autoHealRule.headers);
+      if (!hookHeaders) {
+        return badRequest("Auto-fix webhook headers must be a JSON object");
+      }
+      autoHealRule = {
+        id: `heal_${crypto.randomUUID().slice(0, 10)}`,
+        name: body.autoHealRule.name?.trim() || "Auto-fix rule",
+        provider: hookProvider,
+        enabled: body.autoHealRule.enabled ?? true,
+        webhookUrl: hookUrl,
+        method: hookMethod,
+        headers: hookHeaders,
+        payloadTemplate: body.autoHealRule.payloadTemplate || "",
+        secret: body.autoHealRule.secret || "",
+        triggerAfterFailures: Math.min(
+          10,
+          Math.max(1, Math.round(finiteOrDefault(body.autoHealRule.triggerAfterFailures, 1)))
+        ),
+        cooldownSeconds: Math.max(
+          5,
+          Math.round(finiteOrDefault(body.autoHealRule.cooldownSeconds, 300))
+        ),
+        lastTriggeredAt: null
+      };
+    }
 
     const monitor: Monitor = {
       id: `mon_${crypto.randomUUID().slice(0, 10)}`,
       name: body.name.trim(),
       url: body.url.trim(),
-      method: body.method || "GET",
-      headers: body.headers || {},
+      method,
+      headers: parsedHeaders,
       requestBody: body.requestBody,
-      expectedStatusMin: Number(body.expectedStatusMin ?? 200),
-      expectedStatusMax: Number(body.expectedStatusMax ?? 299),
+      expectedStatusMin,
+      expectedStatusMax,
       expectedBodyIncludes: body.expectedBodyIncludes?.trim() || undefined,
       intervalSeconds: interval,
-      timeoutMs: Math.min(20_000, Math.max(1000, Number(body.timeoutMs ?? 8000))),
-      degradedThresholdMs: Math.max(100, Number(body.degradedThresholdMs ?? 1500)),
+      timeoutMs: Math.min(20_000, Math.max(1000, Math.round(finiteOrDefault(body.timeoutMs, 8000)))),
+      degradedThresholdMs: Math.max(
+        100,
+        Math.round(finiteOrDefault(body.degradedThresholdMs, 1500))
+      ),
       followRedirects: body.followRedirects ?? true,
       allowInsecureTls: body.allowInsecureTls ?? false,
       paused: false,
@@ -336,7 +433,10 @@ export async function handleApiRequest(
   // Individual monitor routes
   const monitorMatch = pathname.match(/^\/api\/monitors\/([^/]+)(?:\/(check|baseline|test-heal))?$/);
   if (monitorMatch) {
-    const monitorId = decodeURIComponent(monitorMatch[1]);
+    const monitorId = safeDecodeParam(monitorMatch[1]);
+    if (!monitorId) {
+      return badRequest("Invalid monitor identifier");
+    }
     const action = monitorMatch[2];
     const monitor = await getMonitor(store, monitorId);
     if (!monitor) {
@@ -345,6 +445,7 @@ export async function handleApiRequest(
 
     if (!action && req.method === "GET") {
       const detail = await buildMonitorDetail(store, monitorId);
+      if (!detail) return badRequest(`Monitor ${monitorId} not found`, 404);
       return json(detail);
     }
 
@@ -352,44 +453,115 @@ export async function handleApiRequest(
       if (!isWriteAuthorized(req)) return badRequest("Unauthorized", 401);
       const body = await parseJsonBody<Partial<Monitor>>(req);
       if (!body) return badRequest("Invalid JSON body");
-      if (body.url && body.url !== monitor.url) {
-        try {
-          await validatePublicTargetUrl(body.url.trim(), probeOptions);
-        } catch (err) {
-          return badRequest(err instanceof Error ? err.message : "Invalid monitor URL");
+      if (body.url !== undefined) {
+        const trimmedUrl = body.url.trim();
+        if (!trimmedUrl) return badRequest("Monitor URL cannot be empty");
+        if (trimmedUrl !== monitor.url) {
+          try {
+            await validatePublicTargetUrl(trimmedUrl, probeOptions);
+          } catch (err) {
+            return badRequest(err instanceof Error ? err.message : "Invalid monitor URL");
+          }
         }
       }
+      if (body.method !== undefined && !VALID_MONITOR_METHODS.has(body.method)) {
+        return badRequest("Method must be GET, POST, or HEAD");
+      }
+      const nextHeaders =
+        body.headers !== undefined ? sanitizeStringRecord(body.headers) : monitor.headers;
+      if (!nextHeaders) {
+        return badRequest("Monitor headers must be a JSON object");
+      }
+      const nextMin = Math.round(
+        finiteOrDefault(body.expectedStatusMin, monitor.expectedStatusMin)
+      );
+      const nextMax = Math.round(
+        finiteOrDefault(body.expectedStatusMax, monitor.expectedStatusMax)
+      );
+      if (nextMin < 100 || nextMax > 599 || nextMin > nextMax) {
+        return badRequest("Expected HTTP status range must be between 100 and 599 (min <= max)");
+      }
+
+      let nextAutoHeal: AutoHealRule | null | undefined = monitor.autoHealRule;
+      if (body.autoHealRule !== undefined) {
+        if (body.autoHealRule === null) {
+          nextAutoHeal = null;
+        } else {
+          const hookUrl = body.autoHealRule.webhookUrl?.trim() || "";
+          if (!hookUrl) {
+            return badRequest("Auto-fix webhook URL is required when rule is enabled");
+          }
+          try {
+            await validatePublicTargetUrl(hookUrl, probeOptions);
+          } catch (err) {
+            return badRequest(err instanceof Error ? err.message : "Invalid auto-fix webhook URL");
+          }
+          const hookMethod = body.autoHealRule.method || "POST";
+          if (!VALID_WEBHOOK_METHODS.has(hookMethod)) {
+            return badRequest("Auto-fix webhook method must be POST, PUT, or GET");
+          }
+          const hookProvider = body.autoHealRule.provider || "custom";
+          if (!VALID_PROVIDERS.has(hookProvider)) {
+            return badRequest("Unsupported auto-fix provider");
+          }
+          const hookHeaders = sanitizeStringRecord(body.autoHealRule.headers);
+          if (!hookHeaders) {
+            return badRequest("Auto-fix webhook headers must be a JSON object");
+          }
+          nextAutoHeal = {
+            ...body.autoHealRule,
+            id: body.autoHealRule.id || `heal_${crypto.randomUUID().slice(0, 10)}`,
+            name: body.autoHealRule.name?.trim() || "Auto-fix rule",
+            provider: hookProvider,
+            webhookUrl: hookUrl,
+            method: hookMethod,
+            headers: hookHeaders,
+            triggerAfterFailures: Math.min(
+              10,
+              Math.max(1, Math.round(finiteOrDefault(body.autoHealRule.triggerAfterFailures, 1)))
+            ),
+            cooldownSeconds: Math.max(
+              5,
+              Math.round(finiteOrDefault(body.autoHealRule.cooldownSeconds, 300))
+            )
+          };
+        }
+      }
+
+      const nextInterval =
+        body.intervalSeconds !== undefined && [30, 60, 300].includes(Number(body.intervalSeconds))
+          ? (Number(body.intervalSeconds) as 30 | 60 | 300)
+          : monitor.intervalSeconds;
+
       const nextPaused = body.paused ?? monitor.paused;
       const updated: Monitor = {
         ...monitor,
-        name: body.name?.trim() ?? monitor.name,
-        url: body.url?.trim() ?? monitor.url,
+        name: body.name !== undefined ? body.name.trim() || monitor.name : monitor.name,
+        url: body.url !== undefined ? body.url.trim() : monitor.url,
         method: body.method ?? monitor.method,
-        headers: body.headers ?? monitor.headers,
+        headers: nextHeaders,
         requestBody: body.requestBody ?? monitor.requestBody,
-        expectedStatusMin: body.expectedStatusMin ?? monitor.expectedStatusMin,
-        expectedStatusMax: body.expectedStatusMax ?? monitor.expectedStatusMax,
+        expectedStatusMin: nextMin,
+        expectedStatusMax: nextMax,
         expectedBodyIncludes:
           body.expectedBodyIncludes !== undefined
             ? body.expectedBodyIncludes.trim() || undefined
             : monitor.expectedBodyIncludes,
-        intervalSeconds: body.intervalSeconds ?? monitor.intervalSeconds,
-        timeoutMs: body.timeoutMs ?? monitor.timeoutMs,
-        degradedThresholdMs: body.degradedThresholdMs ?? monitor.degradedThresholdMs,
+        intervalSeconds: nextInterval,
+        timeoutMs: Math.min(
+          20_000,
+          Math.max(1000, Math.round(finiteOrDefault(body.timeoutMs, monitor.timeoutMs)))
+        ),
+        degradedThresholdMs: Math.max(
+          100,
+          Math.round(finiteOrDefault(body.degradedThresholdMs, monitor.degradedThresholdMs))
+        ),
         followRedirects: body.followRedirects ?? monitor.followRedirects,
         allowInsecureTls: body.allowInsecureTls ?? monitor.allowInsecureTls,
         showOnStatusPage: body.showOnStatusPage ?? monitor.showOnStatusPage,
         paused: nextPaused,
         status: nextPaused ? "paused" : monitor.status === "paused" ? "pending" : monitor.status,
-        autoHealRule:
-          body.autoHealRule !== undefined
-            ? body.autoHealRule
-              ? {
-                  ...body.autoHealRule,
-                  id: body.autoHealRule.id || `heal_${crypto.randomUUID().slice(0, 10)}`
-                }
-              : null
-            : monitor.autoHealRule,
+        autoHealRule: nextAutoHeal,
         updatedAt: Date.now()
       };
       await saveMonitor(store, updated);
@@ -480,8 +652,9 @@ export async function handleApiRequest(
     if (cronSecret) {
       const provided =
         req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ||
-        url.searchParams.get("secret");
-      if (provided !== cronSecret) {
+        url.searchParams.get("secret") ||
+        "";
+      if (!safeEqual(provided, cronSecret)) {
         return badRequest("Unauthorized cron tick", 401);
       }
     }
@@ -492,7 +665,10 @@ export async function handleApiRequest(
   // Public & admin Status Page routes
   const statusMatch = pathname.match(/^\/api\/status-page\/([^/]+)(?:\/(verify-domain))?$/);
   if (statusMatch) {
-    const slug = decodeURIComponent(statusMatch[1]);
+    const slug = safeDecodeParam(statusMatch[1]);
+    if (!slug) {
+      return badRequest("Invalid status page slug");
+    }
     const action = statusMatch[2];
 
     if (!action && req.method === "GET") {
@@ -564,12 +740,22 @@ export async function handleApiRequest(
           ? body.customDomain.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0]
           : existing.customDomain;
 
+      const cleanLogoUrl = body.logoUrl !== undefined ? body.logoUrl.trim() : existing.logoUrl;
+      if (cleanLogoUrl && !isValidHttpUrl(cleanLogoUrl)) {
+        return badRequest("Logo URL must start with http:// or https://");
+      }
+      const nextAccent =
+        body.accentColor !== undefined ? body.accentColor.trim() : existing.accentColor;
+      if (!isValidHexColor(nextAccent)) {
+        return badRequest("Accent color must be a 6-digit hex color like #22d3ee");
+      }
+
       const updated = await saveStatusPageConfig(store, {
         ...existing,
         brandName: body.brandName?.trim() || existing.brandName,
         tagline: body.tagline !== undefined ? body.tagline.trim() : existing.tagline,
-        logoUrl: body.logoUrl !== undefined ? body.logoUrl.trim() : existing.logoUrl,
-        accentColor: body.accentColor || existing.accentColor,
+        logoUrl: cleanLogoUrl,
+        accentColor: nextAccent,
         theme: body.theme === "light" || body.theme === "dark" ? body.theme : existing.theme,
         customDomain: cleanDomain,
         customDomainVerified:
@@ -577,7 +763,7 @@ export async function handleApiRequest(
         hidePlatformBranding: body.hidePlatformBranding ?? existing.hidePlatformBranding,
         showFailureTracesPublicly:
           body.showFailureTracesPublicly ?? existing.showFailureTracesPublicly,
-        planTier: body.planTier === "free" || body.planTier === "starter_10" ? body.planTier : existing.planTier,
+        planTier: "free",
         subMinuteMode:
           body.subMinuteMode === "always" || body.subMinuteMode === "smart"
             ? body.subMinuteMode

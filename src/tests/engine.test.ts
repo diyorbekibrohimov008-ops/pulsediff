@@ -94,12 +94,13 @@ describe("end-to-end monitoring, diffing, auto-heal & white-label status page fl
     const detail = await apiJson<MonitorDetailPayload>(store, "/api/monitors/mon_checkout_sim");
     expect(detail.data.deliveries[0].recoveredNextCheck).toBe(true);
 
-    // 6. White-label status page defaults hide branding and redact failure trace diffs when disabled
+    // 6. White-label status page defaults hide branding, unlock free tier, and redact failure trace diffs when disabled
     const publicHidden = await apiJson<{
       config: StatusPageConfig;
       incidents: Incident[];
     }>(store, "/api/status-page/default");
     expect(publicHidden.data.config.hidePlatformBranding).toBe(true);
+    expect(publicHidden.data.config.planTier).toBe("free");
     expect(publicHidden.data.incidents[0].diff).toBeNull();
 
     // Updating branding & enabling public traces exposes sanitized diff & enables resolve-host
@@ -133,5 +134,79 @@ describe("end-to-end monitoring, diffing, auto-heal & white-label status page fl
       probeOptions: { internalOrigin: ORIGIN }
     });
     expect(directRes.checkRun.status).toBe("up");
+  });
+
+  it("validates monitor & status-page inputs cleanly without 500s and normalizes legacy planTier to free", async () => {
+    const store = new MemoryKvStore();
+    await store.setJSON("settings/status-pages/default", {
+      slug: "default",
+      brandName: "Legacy Co",
+      tagline: "Status",
+      logoUrl: "",
+      accentColor: "#10b981",
+      theme: "dark",
+      customDomain: "",
+      customDomainVerified: false,
+      customDomainRecords: [],
+      hidePlatformBranding: true,
+      showFailureTracesPublicly: false,
+      planTier: "starter_10",
+      subMinuteMode: "smart",
+      updatedAt: Date.now()
+    });
+
+    const normalized = await apiJson<{ config: StatusPageConfig }>(store, "/api/status-page/default");
+    expect(normalized.status).toBe(200);
+    expect(normalized.data.config.planTier).toBe("free");
+
+    // Malformed percent encoding should return 400 instead of throwing 500
+    const badParam = await apiJson<{ error: string }>(store, "/api/monitors/%E0%A4%A");
+    expect(badParam.status).toBe(400);
+
+    // Invalid status range rejected
+    const badRange = await apiJson<{ error: string }>(store, "/api/monitors", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Bad Range",
+        url: `${ORIGIN}/api/sim/target?key=default`,
+        expectedStatusMin: 400,
+        expectedStatusMax: 200
+      })
+    });
+    expect(badRange.status).toBe(400);
+
+    // Private IP auto-heal webhook blocked
+    const badWebhook = await apiJson<{ error: string }>(store, "/api/monitors", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "SSRF Webhook",
+        url: `${ORIGIN}/api/sim/target?key=default`,
+        autoHealRule: {
+          name: "Local Hook",
+          provider: "custom",
+          enabled: true,
+          webhookUrl: "http://127.0.0.1:9999/internal",
+          method: "POST",
+          headers: {},
+          payloadTemplate: "{}",
+          triggerAfterFailures: 1,
+          cooldownSeconds: 60
+        }
+      })
+    });
+    expect(badWebhook.status).toBe(400);
+
+    // Invalid logoUrl protocol and invalid accentColor rejected
+    const badLogo = await apiJson<{ error: string }>(store, "/api/status-page/default", {
+      method: "PUT",
+      body: JSON.stringify({ logoUrl: "javascript:alert(1)" })
+    });
+    expect(badLogo.status).toBe(400);
+
+    const badColor = await apiJson<{ error: string }>(store, "/api/status-page/default", {
+      method: "PUT",
+      body: JSON.stringify({ accentColor: "red;background:url(x)" })
+    });
+    expect(badColor.status).toBe(400);
   });
 });
